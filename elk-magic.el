@@ -45,6 +45,8 @@
 ;;
 ;;; Code:
 
+(require 'dash)
+
 (require 'elk)
 
 ;;* Package
@@ -53,9 +55,11 @@
   :prefix "elk-magic-"
   :group 'tools
   :link (list 'url-link
-              :tag "Github" "https://github.com/FrancisMurillo/elk-magic.el"))
+           :tag "Github" "https://github.com/FrancisMurillo/elk-magic.el"))
 
-(defun elk--discard-filler (tokens)
+
+;;* Private
+(defun elk-magic--discard-filler (tokens)
   "Disregard comments and whitespace with the tokens"
   (let* ((filterer (lambda (token)
                      (let ((type (plist-get token :type)))
@@ -67,7 +71,7 @@
                        (pcase type
                          ((or `expression `quote)
                           (let* ((sub-tokens (plist-get token :tokens)))
-                            (plist-put (-copy token) :tokens (elk--discard-filler sub-tokens))))
+                            (plist-put (-copy token) :tokens (elk-magic--discard-filler sub-tokens))))
                          (_ token)))))
          (pipeline (-compose
                     (-partial #'-map recurser)
@@ -75,93 +79,7 @@
     (funcall pipeline tokens)))
 
 
-(defun elk--attach-source (text tokens)
-  "Label atoms based on their source text"
-  (lexical-let* ((source-text text)
-                 (recurser (lambda (token)
-                             (let ((type (plist-get token :type)))
-                               (pcase type
-                                 ((or `atom `text `comment `whitespace)
-                                  (let ((start-pos (plist-get token :start-pos))
-                                        (end-pos  (plist-get token :end-pos))
-                                        (new-token (-copy token)))
-                                    (when (= end-pos -1)
-                                      (setf end-pos (length source-text))
-                                      (plist-put new-token :end-pos end-pos))
-                                    (plist-put new-token :text
-                                              (substring-no-properties source-text
-                                                                       start-pos
-                                                                       end-pos))))
-                                 ((or `expression `quote)
-                                  (let* ((sub-tokens (plist-get token :tokens)))
-                                    (plist-put(-copy token) :tokens (elk--attach-source source-text sub-tokens))))
-                                 (_ token))))))
-    (-map recurser tokens)))
-
-(defun elk--leveler (level tokens)
-  "Recurser of elk--attach-level"
-  (-map (lambda (token)
-          (let ((type (plist-get token :type))
-                (leveled-token (plist-put (-copy token) :level level)))
-            (pcase type
-              ((or `expression `quote)
-               (let ((sub-tokens (plist-get leveled-token :tokens)))
-                 (plist-put (-copy leveled-token)
-                            :tokens (elk--leveler (1+ level) sub-tokens))))
-              (_ leveled-token))))
-        tokens))
-
-(defun elk--attach-level (tokens)
-  "Attach a level value for the"
-  (elk--leveler 0 tokens))
-
-(defun elk--incremental-sequence (&optional start)
-  "An quick implementation of an increasing sequence"
-  (lexical-let ((seed (or start 0)))
-    (lambda ()
-      (prog1
-          seed
-        (setf seed (1+ seed))))))
-
-(defun elk--marker (parent-id generator tokens)
-  "Recurser of elk--attach-token-id"
-  (-map (lambda (token)
-          (let ((type (plist-get token :type))
-                (marked-token (plist-put (-copy token) :id (funcall generator))))
-            (setf marked-token (plist-put marked-token :parent-id parent-id))
-            (pcase type
-              ((or `expression `quote)
-               (let ((sub-tokens (plist-get marked-token :tokens)))
-                 (plist-put (-copy marked-token)
-                            :tokens (elk--marker
-                                     (plist-get marked-token :id)
-                                     generator sub-tokens))))
-              (_ marked-token))))
-        tokens))
-
-(defun elk--attach-token-id (tokens)
-  "Attach an id for each token, useful when the tokens are flattned"
-  (elk--marker 0 (elk--incremental-sequence 1) tokens))
-
-(defun elk--indexer (tokens)
-  "Recurser of elk--attach-expression-index"
-  (-map-indexed (lambda (index token)
-                  (let ((type (plist-get token :type))
-                        (indexed-token (plist-put (-copy token) :index index)))
-                    (pcase type
-                      ((or `expression `quote)
-                       (let ((sub-tokens (plist-get indexed-token :tokens)))
-                         (plist-put (-copy indexed-token)
-                                    :tokens (elk--indexer sub-tokens))))
-                      (_ indexed-token))))
-                tokens))
-
-(defun elk--attach-expression-index (tokens)
-  "Attach indices to expression to determine what position it is in"
-  (elk--indexer tokens))
-
-
-(defun elk--flatten-tokens (tokens)
+(defun elk-magic--flatten-tokens (tokens)
   "Flatten nested tokens as one token list"
   (funcall (-compose
             (-partial #'apply #'append)
@@ -170,34 +88,34 @@
                                  (pcase type
                                    ((or `expression `quote)
                                     (let ((sub-tokens (plist-get token :tokens)))
-                                      (elk--flatten-tokens sub-tokens)))
+                                      (elk-magic--flatten-tokens sub-tokens)))
                                    (_ (list token)))))))
            tokens))
 
-(defun elk--select-type (type tokens)
+(defun elk-magic--select-type (type tokens)
   "Filter tokens by a specified type"
   (funcall (-compose
             (-partial #'-filter
                       (lambda (token)
                         (eq (plist-get token :type) type)))
-            #'elk--flatten-tokens)
+            #'elk-magic--flatten-tokens)
            tokens))
 
-(defun elk--extract-atoms (tokens)
+(defun elk-magic--extract-atoms (tokens)
   "Get atoms in tokens"
   (funcall (-compose
             (-partial #'-map (-rpartial #'plist-get :text))
-            (-partial #'elk--select-type 'atom))
+            (-partial #'elk-magic--select-type 'atom))
            tokens))
 
-(defun elk--extract-text (tokens)
+(defun elk-magic--extract-text (tokens)
   "Get text in tokens"
   (funcall (-compose
             (-partial #'-map (-rpartial #'plist-get :text))
-            (-partial #'elk--select-type 'text))
+            (-partial #'elk-magic--select-type 'text))
            tokens))
 
-(defun elk--default-atom-filter (atom)
+(defun elk-magic--default-atom-filter (atom)
   "Filter an atom if it is not built-in or redundant"
   (funcall (-andfn (-not
                     (-compose
@@ -210,7 +128,8 @@
            atom))
 
 
-(defun elk--summarize-atoms (tokens)
+;;* Interface
+(defun elk-magic-summarize-atoms (tokens)
   "Report what atoms are used more likely"
   (funcall (-compose
             (-partial #'-sort (-on #'> #'cdr))
@@ -218,21 +137,17 @@
                                (cons (-first-item repeating-tokens)
                                      (1- (length repeating-tokens)))))
             (-partial #'-group-by #'identity)
-            (-partial #'-filter #'elk--default-atom-filter)
-            #'elk--extract-atoms)
+            (-partial #'-filter #'elk-magic--default-atom-filter)
+            #'elk-magic--extract-atoms)
            tokens))
 
-
-
-
-
-(defun elk--nearest-top-expression-at-point ()
+(defun elk-magic--nearest-top-expression-at-point ()
   "Get token expression that is nearest to the highest point"
   (interactive)
   (let* ((source-text (buffer-substring-no-properties (point-min) (point-max)))
-         (tokens (elk--tokenize source-text))
+         (tokens (elk-parse source-text))
          (expression-token (-first (lambda (token)
-                                     (and (= (plist-get token :level) 0)
+                                     (and (= (plist-get token :level) 1)
                                           (eq (plist-get token :type) 'expression)
                                           (<= (plist-get token :start-pos) (point))
                                           (>= (plist-get token :end-pos) (point))))
@@ -240,6 +155,66 @@
     (if expression-token
         (goto-char (1+ (plist-get expression-token :start-pos)))
       (message "No near top level expression at point"))))
+
+(defun elk-magic--create-token-table (tokens)
+  "Create an hash table on the TOKENS based on their ID.  This is for manipulating tokens inplace."
+  (letrec ((table (make-hash-table
+                   :size (length tokens)
+                   :rehash-size 2.0))
+           (recurser
+            (lambda (table tokens)
+              (mapc (lambda (token)
+                      (puthash (plist-get token :id) token table)
+                      (funcall recurser table (plist-get token :tokens)))
+                    tokens)
+              table)))
+    (funcall recurser table tokens)))
+
+(defun elk-magic--select-top-level-expressions (tokens)
+  "Extract top level expressions from a list of TOKENS."
+  (-filter (lambda (token)
+             (and (= (plist-get token :level) 1)
+                (eq (plist-get token :type) 'expression)))
+           tokens))
+
+(defun elk-magic--token-depth (token)
+  "Find out the TOKEN depth or the maximum number of level it has."
+  (letrec ((recurser
+       (lambda (token)
+         (let* ((token-level (plist-get token :level))
+             (sub-tokens (plist-get token :tokens))
+             (sub-token-depths
+              (-map recurser sub-tokens)))
+           (if sub-token-depths
+               (-max sub-token-depths)
+             token-level)))))
+    (funcall recurser token)))
+
+(defun elk-magic--token-atoms (token)
+  "Find out the TOKEN child atoms up to the last depth."
+  (letrec ((recurser
+       (lambda (token)
+         (let* ((token-type (plist-get token :type))
+             (sub-tokens (plist-get token :tokens)))
+           (if (eq token-type 'atom)
+               (list token)
+             (apply #'append (-map recurser sub-tokens)))))))
+    (funcall recurser token)))
+
+(defun elk-magic--token-complexity (token)
+  "Compute expression or TOKEN complexity."
+  (let* ((atoms (elk-magic--token-atoms token))
+      (root-level (plist-get token :level))
+      (atom-complexity (/ (float (length atoms)))))
+    (-sum
+     (-map (lambda (atom)
+             (let* ((depth (- (plist-get atom :level) root-level))
+                 (depth-complexity depth))
+               (* atom-complexity depth-complexity)))
+           atoms))))
+
+
+;;* Interface
 
 
 (provide 'elk-magic)
